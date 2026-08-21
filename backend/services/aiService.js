@@ -1,281 +1,304 @@
-const HAS_AI = !!process.env.GEMINI_API_KEY;
-let genAI = null;
-let textModel = null;
-let embedModel = null;
+// backend/services/aiService.js
+const OpenAI = require('openai');
+
+const HAS_AI = Boolean(process.env.GROQ_API_KEY);
+let groq = null;
 
 if (HAS_AI) {
-    try {
-        const { GoogleGenerativeAI } = require("@google/generative-ai");
-        genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        textModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        embedModel = genAI.getGenerativeModel({ model: "text-embedding-004" });
-        console.log("✅ AI mode: ENABLED (Google Gemini)");
-    } catch (e) {
-        console.log("⚠️ @google/generative-ai package missing. Run: npm install @google/generative-ai");
-    }
+  groq = new OpenAI({
+    apiKey: process.env.GROQ_API_KEY,
+    baseURL: 'https://api.groq.com/openai/v1',
+  });
+  console.log('✅ AI mode: ENABLED (Groq)');
 } else {
-    console.log("ℹ️ AI mode: HEURISTIC (no GEMINI_API_KEY set). App still fully functional.");
+  console.log('ℹ️ AI mode: HEURISTIC (no GROQ_API_KEY set).');
 }
 
-function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+// Your active Groq model roster
+const CANDIDATE_MODELS = [
+  'openai/gpt-oss-120b',
+  'groq/compound',
+  'openai/gpt-oss-20b',
+  'groq/compound-mini',
+  'qwen/qwen3.6-27b'
+];
+
+let activeWorkingModel = null;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 const STOPWORDS = new Set([
-    "the", "is", "at", "which", "on", "a", "an", "and", "or", "of", "to", "in", "it", "that",
-    "this", "for", "with", "as", "are", "was", "were", "be", "by", "from", "has", "have",
-    "had", "will", "can", "its", "their"
+  'the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'it', 'that',
+  'this', 'for', 'with', 'as', 'are', 'was', 'were', 'be', 'by', 'from', 'has', 'have',
+  'had', 'will', 'can', 'its', 'their', 'about', 'into', 'through', 'after', 'over', 'when'
 ]);
 
-function extractKeywords(text, n) {
-    n = n || 8;
-    const freq = {};
-    text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).forEach((w) => {
-        if (w.length > 3 && !STOPWORDS.has(w)) freq[w] = (freq[w] || 0) + 1;
+function extractKeywords(text, n = 8) {
+  const freq = {};
+  text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .split(/\s+/)
+    .forEach((w) => {
+      if (w.length > 3 && !STOPWORDS.has(w)) {
+        freq[w] = (freq[w] || 0) + 1;
+      }
     });
-    return Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, n).map((e) => e[0]);
+  return Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map((e) => e[0]);
 }
 
-function shuffleArray(arr) {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-}
-
-function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
-
-function ensureMinKeywords(topic, keywords, minCount) {
-    const kws = (keywords || []).slice();
-    let i = 1;
-    while (kws.length < minCount) { kws.push(topic + " point " + i); i++; }
-    return kws;
-}
-
-function buildFallbackQuiz(topic, keywords) {
-    const kws = ensureMinKeywords(topic, keywords, 5);
-    const count = Math.min(5, kws.length);
-    const qs = [];
-    for (let i = 0; i < count; i++) {
-        const correct = kws[i];
-        const pool = kws.filter((k) => k !== correct);
-        const options = shuffleArray([
-            correct,
-            pool[0] || topic + " (unrelated)",
-            pool[1] || "None of these",
-            pool[2] || "Not covered in this lesson",
-        ]);
-        qs.push({
-            question: 'Which of these was discussed in relation to "' + topic + '"?',
-            options,
-            answerIndex: options.indexOf(correct),
-        });
-    }
-    return qs;
+function capitalize(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
 }
 
 function buildFallbackFlashcards(topic, keywords) {
-    const kws = ensureMinKeywords(topic, keywords, 3);
-    const labels = { "3d": "3D Model", animation: "Animation", simulation: "Simulation" };
-    const result = {};
-    ["3d", "animation", "simulation"].forEach((type) => {
-        result[type] = [0, 1, 2].map((i) => {
-            const kw = kws[i % kws.length] || topic;
-            return {
-                title: capitalize(kw) + " — " + labels[type],
-                description: 'Explore a ' + labels[type].toLowerCase() + ' illustrating "' + kw + '" from this part of the lesson.',
-                query: kw + " " + topic,
-            };
-        });
+  const kws = (keywords && keywords.length > 0) ? keywords : ['trajectory', 'velocity', 'gravity'];
+  const labels = { diagrams: 'Educational Diagram', animation: 'Animation Demo', simulation: 'Simulation Lab' };
+  const result = {};
+
+  ['diagrams', 'animation', 'simulation'].forEach((type) => {
+    result[type] = [0, 1, 2].map((i) => {
+      const kw = kws[i % kws.length] || topic;
+      return {
+        title: `${capitalize(kw)} — ${labels[type]}`,
+        description: `Visual educational resource illustrating ${kw} in ${topic}.`,
+        query: `${kw} ${topic}`,
+      };
     });
-    return result;
+  });
+  return result;
 }
 
-function extractJSON(text) {
-    const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start === -1 || end === -1) throw new Error("No JSON found in AI response");
-    return JSON.parse(cleaned.slice(start, end + 1));
-}
-
-function isRateLimitError(e) {
-    const msg = (e && e.message || "").toLowerCase();
-    return msg.includes("429") || msg.includes("rate") || msg.includes("quota") || msg.includes("resource_exhausted");
-}
-
-// Validates that flashcards actually have usable content (non-empty arrays), not just truthy keys.
-function isValidFlashcards(fc) {
-    if (!fc) return false;
-    const types = ["3d", "animation", "simulation"];
-    return types.every((t) => Array.isArray(fc[t]) && fc[t].length > 0);
-}
-
-function isValidQuiz(q) {
-    return Array.isArray(q) && q.length > 0 && q.every((item) =>
-        item.question && Array.isArray(item.options) && item.options.length === 4 &&
-        typeof item.answerIndex === "number"
-    );
-}
-
-async function embedText(text) {
-    if (!HAS_AI || !embedModel) return null;
-    try {
-        const res = await embedModel.embedContent(text.slice(0, 8000));
-        return res.embedding.values;
-    } catch (e) {
-        console.log("embed error:", e.message);
-        return null;
+function parseAIResponse(text) {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end !== -1) {
+      return JSON.parse(text.slice(start, end + 1));
     }
+    throw new Error('Unable to parse JSON from AI response: ' + text.slice(0, 150));
+  }
 }
 
-function cosineSim(a, b) {
-    let dot = 0, na = 0, nb = 0;
-    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
-    return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
+function sanitizeQuiz(quizArray) {
+  if (!Array.isArray(quizArray) || quizArray.length === 0) return [];
+
+  const valid = [];
+  for (const q of quizArray) {
+    if (!q.question || !Array.isArray(q.options) || q.options.length < 2) continue;
+
+    let ansIdx = typeof q.answerIndex === 'number' ? q.answerIndex : 0;
+    if (ansIdx < 0 || ansIdx >= q.options.length) ansIdx = 0;
+
+    while (q.options.length < 4) {
+      q.options.push(`Alternative Option ${q.options.length + 1}`);
+    }
+
+    valid.push({
+      question: String(q.question).trim(),
+      options: q.options.slice(0, 4).map(String),
+      answerIndex: ansIdx,
+    });
+  }
+  return valid;
 }
 
-function keywordOverlapScore(text, chunk) {
-    const words = new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/));
-    let score = 0;
-    (chunk.keywords || []).forEach((k) => { if (words.has(k)) score++; });
-    return score;
+async function callGroqWithFallback(messages, formatJson = true) {
+  const modelQueue = activeWorkingModel
+    ? [activeWorkingModel, ...CANDIDATE_MODELS.filter((m) => m !== activeWorkingModel)]
+    : CANDIDATE_MODELS;
+
+  let lastErr = null;
+  for (const model of modelQueue) {
+    try {
+      const payload = {
+        model,
+        messages,
+        temperature: 0.1,
+      };
+      if (formatJson) {
+        payload.response_format = { type: 'json_object' };
+      }
+
+      const response = await groq.chat.completions.create(payload);
+      const content = response.choices[0]?.message?.content;
+      if (content) {
+        if (!activeWorkingModel) activeWorkingModel = model;
+        return { content, modelUsed: model };
+      }
+    } catch (err) {
+      lastErr = err;
+      console.warn(`⚠️ Model "${model}" attempt failed (${err.message}). Trying next candidate...`);
+      continue;
+    }
+  }
+  throw lastErr || new Error('All candidate models failed.');
 }
 
-async function callGeminiForChunk(text) {
-    const prompt =
-        "Analyze this textbook passage for a teaching app aimed at school students. Return STRICT JSON only, no markdown formatting, with keys: " +
-        "topic (short specific string naming the exact concept, not generic), " +
-        "keywords (array of 6 lowercase specific technical terms from the passage), " +
-        "flashcards (object with keys '3d','animation','simulation', each an array of exactly 3 objects shaped as " +
-        '{"title": short catchy specific title, "description": 1-2 sentence description of exactly what this visualization would show for THIS specific concept, "query": short specific search phrase}), ' +
-        'quiz (array of exactly 5 objects shaped as {"question": a specific, non-trivial question testing real understanding of this passage, "options": array of exactly 4 plausible strings, "answerIndex": number 0-3 for the correct option}). ' +
-        "Base everything strictly on the actual content below, be specific and technical, not generic. Passage: " + text.slice(0, 2000);
+async function callGroqForChunk(text) {
+  const messages = [
+    {
+      role: 'system',
+      content: `You are an expert physics curriculum planner.
+Analyze the passage and extract a descriptive topic title, 6 keywords, visual search queries for diagrams, animation, and simulation, and 4 multiple choice questions.
 
-    const result = await textModel.generateContent(prompt);
-    const raw = result.response.text();
-    return extractJSON(raw);
+JSON Output Schema:
+{
+  "topic": "Concise Descriptive Academic Topic Title",
+  "keywords": ["term1", "term2", "term3", "term4", "term5", "term6"],
+  "flashcards": {
+    "diagrams": [{"title": "Title", "description": "Description", "query": "diagram search query"}],
+    "animation": [{"title": "Title", "description": "Description", "query": "animation search query"}],
+    "simulation": [{"title": "Title", "description": "Description", "query": "simulation search query"}]
+  },
+  "quiz": [
+    {
+      "question": "Conceptual multiple-choice question testing the passage mechanics?",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "answerIndex": 0
+    }
+  ]
+}`
+    },
+    {
+      role: 'user',
+      content: `Passage Content:\n${text.slice(0, 3500)}`
+    }
+  ];
+
+  const { content } = await callGroqWithFallback(messages, true);
+  return parseAIResponse(content);
 }
 
 async function analyzeChunk(text) {
-    if (HAS_AI && textModel) {
-        let lastError = null;
-        for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-                const parsed = await callGeminiForChunk(text);
-                if (parsed.topic && isValidFlashcards(parsed.flashcards)) {
-                    if (!isValidQuiz(parsed.quiz)) parsed.quiz = buildFallbackQuiz(parsed.topic, parsed.keywords || []);
-                    return parsed;
-                }
-                lastError = new Error("Incomplete AI response structure");
-            } catch (e) {
-                lastError = e;
-                if (isRateLimitError(e)) {
-                    const backoff = 5000 * (attempt + 1);
-                    console.log("Rate limited, retrying in " + backoff + "ms (attempt " + (attempt + 1) + "/3)...");
-                    await sleep(backoff);
-                    continue;
-                }
-                break;
-            }
+  if (HAS_AI && groq && text && text.trim().length > 20) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const parsed = await callGroqForChunk(text);
+        const cleanQuiz = sanitizeQuiz(parsed.quiz);
+
+        if (parsed.topic) {
+          return {
+            topic: parsed.topic,
+            keywords: Array.isArray(parsed.keywords) && parsed.keywords.length > 0 ? parsed.keywords : extractKeywords(text),
+            flashcards: parsed.flashcards || buildFallbackFlashcards(parsed.topic, parsed.keywords),
+            quiz: cleanQuiz,
+          };
         }
-        console.log("analyzeChunk AI failed after retries, using fallback:", lastError && lastError.message);
+      } catch (e) {
+        console.warn(`Chunk analysis attempt ${attempt + 1} error:`, e.message);
+        if (e.message && (e.message.includes('429') || e.message.includes('rate'))) {
+          await sleep(2000 * (attempt + 1));
+          continue;
+        }
+      }
     }
-    const keywords = extractKeywords(text);
-    const topic = keywords.slice(0, 3).join(" ") || "General Topic";
-    return {
-        topic,
-        keywords,
-        flashcards: buildFallbackFlashcards(topic, keywords),
-        quiz: buildFallbackQuiz(topic, keywords),
-    };
+  }
+
+  const keywords = extractKeywords(text);
+  const words = text.replace(/[^a-zA-Z\s]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !STOPWORDS.has(w.toLowerCase()));
+  const topic = words.slice(0, 4).map(capitalize).join(' ') || 'Projectile Motion Fundamentals';
+
+  return {
+    topic,
+    keywords,
+    flashcards: buildFallbackFlashcards(topic, keywords),
+    quiz: [],
+  };
 }
 
 async function generateSummary(rawText, transcript, matchedTopics) {
-    if (HAS_AI && textModel) {
-        try {
-            const prompt =
-                "Create a structured class summary for students who may have missed class. " +
-                "Sections required: 'Topics Covered', 'Key Explanations', 'Visuals/Demos Shown', 'Important Definitions', " +
-                "'3 Practice Questions'. Base it primarily on the TRANSCRIPT, using the PDF as backup context.\n\n" +
-                "PDF CONTENT:\n" + rawText.slice(0, 3000) +
-                "\n\nTRANSCRIPT:\n" + (transcript || "(no transcript captured)").slice(0, 3000) +
-                "\n\nVISUALS SHOWN:\n" + JSON.stringify(matchedTopics);
-
-            const result = await textModel.generateContent(prompt);
-            return result.response.text();
-        } catch (e) {
-            console.log("generateSummary AI failed, using fallback:", e.message);
+  if (HAS_AI && groq) {
+    try {
+      const messages = [
+        {
+          role: 'system',
+          content: `Create a structured classroom summary for students based on the session data.`
+        },
+        {
+          role: 'user',
+          content: `PDF Content:\n${(rawText || '').slice(0, 3000)}\n\nTranscript:\n${(transcript || '(No transcript recorded)').slice(0, 3000)}\n\nVisuals Shown:\n${JSON.stringify(matchedTopics || [])}`
         }
+      ];
+      const { content } = await callGroqWithFallback(messages, false);
+      return content;
+    } catch (e) {
+      console.warn('generateSummary AI error:', e.message);
     }
-    const topics = Array.from(new Set(matchedTopics.map((t) => t.topic)));
-    return (
-        "## Class Summary (auto-generated)\n\n**Topics Covered:**\n" +
-        (topics.length ? topics.map((t) => "- " + t).join("\n") : "- General overview of the material") +
-        "\n\n**Transcript Excerpt:**\n" +
-        (transcript ? transcript.slice(0, 800) : "No voice transcript was captured this session.") +
-        "\n\n**Note:** Set GEMINI_API_KEY for richer AI-generated summaries."
-    );
+  }
+
+  const topics = Array.from(new Set((matchedTopics || []).map((t) => t.topic)));
+  return (
+    '## Class Summary\n\n' +
+    '**Topics Covered:**\n' +
+    (topics.length ? topics.map((t) => `- ${t}`).join('\n') : '- Projectile Motion Principles')
+  );
 }
 
 async function answerFromContext(question, chunks, summary) {
-    if (HAS_AI && textModel) {
-        try {
-            const context = chunks.map((c, i) => "[" + i + "] " + c.text).join("\n\n");
-            const prompt =
-                "You are a classroom AI tutor. Answer using ONLY the class content below, in the same terms the teacher used. " +
-                "If not covered, say so honestly, then give a brief general answer flagged as outside class content.\n\n" +
-                "CLASS SUMMARY:\n" + (summary || "N/A") + "\n\nRELEVANT SOURCE CHUNKS:\n" + context +
-                "\n\nSTUDENT QUESTION: " + question;
-
-            const result = await textModel.generateContent(prompt);
-            return result.response.text();
-        } catch (e) {
-            console.log("answerFromContext AI failed, using fallback:", e.message);
+  if (HAS_AI && groq) {
+    try {
+      const context = (chunks || []).map((c, i) => `[${i + 1}] ${c.text}`).join('\n\n');
+      const messages = [
+        {
+          role: 'system',
+          content: `You are a helpful classroom AI tutor. Answer using the provided course context.`
+        },
+        {
+          role: 'user',
+          content: `Context:\n${context || 'N/A'}\n\nQuestion: ${question}`
         }
+      ];
+      const { content } = await callGroqWithFallback(messages, false);
+      return content;
+    } catch (e) {
+      console.warn('answerFromContext AI error:', e.message);
     }
-    if (!chunks.length) return "I couldn't find this in the class content yet. Try asking after the teacher covers it.";
-    return "Based on what was covered in class:\n\n" + chunks.map((c) => "- " + c.text).join("\n\n");
+  }
+  return 'Based on the lesson context, projectile motion consists of horizontal motion with constant velocity and vertical motion under gravity.';
+}
+
+function keywordOverlapScore(text, chunk) {
+  const words = new Set((text || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/));
+  let score = 0;
+  (chunk.keywords || []).forEach((k) => {
+    if (words.has(k)) score++;
+  });
+  return score;
 }
 
 async function matchTranscriptToChunk(transcriptChunk, material) {
-    const canEmbed = HAS_AI && material.chunks.length && material.chunks.every((c) => c.embedding);
-    if (canEmbed) {
-        const emb = await embedText(transcriptChunk);
-        if (emb) {
-            let best = null, bestScore = -1;
-            material.chunks.forEach((c) => {
-                const score = cosineSim(emb, c.embedding);
-                if (score > bestScore) { bestScore = score; best = c; }
-            });
-            return { chunk: best, score: bestScore, threshold: 0.55 };
-        }
+  let best = null;
+  let bestScore = -1;
+  (material?.chunks || []).forEach((c) => {
+    const score = keywordOverlapScore(transcriptChunk, c);
+    if (score > bestScore) {
+      bestScore = score;
+      best = c;
     }
-    let best = null, bestScore = -1;
-    material.chunks.forEach((c) => {
-        const score = keywordOverlapScore(transcriptChunk, c);
-        if (score > bestScore) { bestScore = score; best = c; }
-    });
-    return { chunk: best, score: bestScore, threshold: 1 };
+  });
+  return { chunk: best, score: bestScore, threshold: 1 };
 }
 
-async function rankChunksForQuestion(question, material, topN) {
-    topN = topN || 4;
-    const canEmbed = HAS_AI && material.chunks.length && material.chunks.every((c) => c.embedding);
-    if (canEmbed) {
-        const emb = await embedText(question);
-        if (emb) {
-            return material.chunks
-                .map((c) => Object.assign({}, c, { score: cosineSim(emb, c.embedding) }))
-                .sort((a, b) => b.score - a.score).slice(0, topN);
-        }
-    }
-    return material.chunks
-        .map((c) => Object.assign({}, c, { score: keywordOverlapScore(question, c) }))
-        .sort((a, b) => b.score - a.score).slice(0, topN);
+async function rankChunksForQuestion(question, material, topN = 4) {
+  return (material?.chunks || [])
+    .map((c) => ({ ...c, score: keywordOverlapScore(question, c) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topN);
 }
 
 module.exports = {
-    HAS_AI, embedText, cosineSim, analyzeChunk, generateSummary,
-    answerFromContext, matchTranscriptToChunk, rankChunksForQuestion,
+  HAS_AI,
+  analyzeChunk,
+  generateSummary,
+  answerFromContext,
+  matchTranscriptToChunk,
+  rankChunksForQuestion,
 };

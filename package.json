@@ -16,9 +16,10 @@
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "groq-sdk": "^1.5.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
-    "openai": "^7.4.0",
-    "pdf-parse": "^1.1.1"
+    "openai": "^7.5.0",
+    "pdf-parse": "^1.1.4"
   }
 }

@@ -13,7 +13,14 @@ app.use(express.json({ limit: "10mb" }));
 
 // Serve frontend + uploaded PDFs
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/uploads", express.static(UPLOAD_DIR));
+app.use("/uploads", express.static(UPLOAD_DIR, {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith(".pdf")) {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", "inline");
+    }
+  }
+}));
 
 // API routes
 app.use("/api/auth", require("./backend/routes/auth"));
